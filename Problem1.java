@@ -1,15 +1,29 @@
-import java.util.Random;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
-import java.util.concurrent.atomic.AtomicMarkableReference;
+import java.util.*;
+import java.util.concurrent.atomic.*;
+
+import javax.lang.model.util.ElementScanner6;
 
 public class Problem1
 {
     final static int NUM_THREADS = 4;
+    final static int NUM_PRESENTS = 500_000;
+    final static double CONTAINS_CHANCE = 0.10;
 
     public static void main(String[] args)
     {
-        LockFreeList list = new LockFreeList();
+        // Create and shuffle bag of presents
+        ArrayList<Integer> bag = new ArrayList<Integer>(NUM_PRESENTS);
+        AtomicInteger currentPresent = new AtomicInteger(0); 
+
+        for (int i = 0; i < NUM_PRESENTS; i++)
+        {
+            bag.add(i);
+        }
+
+        Collections.shuffle(bag);
+
+        // Create chain and servant (thread) objects
+        LockFreeList chain = new LockFreeList();
         Thread[] threads = new Thread[NUM_THREADS];
 
         for (int i = 0; i < threads.length; i++)
@@ -18,13 +32,36 @@ public class Problem1
             {
                 public void run()
                 {
-                    list.add((int) (Math.random() * 100));
-                    list.print();
-                    list.add((int) (Math.random() * 100));
-                    list.print();
-                    list.removeFirst();
-                    list.print();
-                    list.contains((int) (Math.random() * 100));
+                    int currentTask = 0;
+                    while (currentPresent.get() < NUM_PRESENTS)
+                    {
+                        boolean checkContains = Math.random() < CONTAINS_CHANCE;
+
+                        // Each thread randomly checks if a particular gift is in the chain
+                        if (checkContains)
+                        {
+                            chain.contains((int) Math.random() * NUM_PRESENTS);
+                        }
+                        // Or alternates between adding a gift to the chain from the bag
+                        else if (currentTask % 2 == 0)
+                        {
+                            int nextPresent = currentPresent.getAndIncrement();
+
+                            if (nextPresent >= NUM_PRESENTS)
+                            {
+                                break;
+                            }
+
+                            chain.add(bag.get(nextPresent));
+                            currentTask++;
+                        }
+                        // Or writing a thank you note from a gift in the chain
+                        else
+                        {
+                            chain.removeFirst();
+                            currentTask++;
+                        }
+                    }
                 }
             });
         }
@@ -42,6 +79,8 @@ public class Problem1
             }
             catch (InterruptedException exception) {}
         }
+
+        System.out.println("All the thank you notes have been written!");
     }
 }
 
@@ -128,49 +167,6 @@ class LockFreeList
         }
 
         return (curr.value == value && !marked[0]);
-    }
-
-    public void print()
-    {
-        String output = "";
-        Node pred = null, curr = null, succ = null;
-        boolean[] marked = {false};
-        boolean snip;
-
-        retry: while (true)
-        {
-            pred = head;
-            curr = pred.next.getReference();
-
-            while (true)
-            {
-                succ = curr.next.get(marked);
-                
-                while (marked[0])
-                {
-                    snip = pred.next.compareAndSet(curr, succ, false, false);
-
-                    if (!snip)
-                    {
-                        continue retry;
-                    }
-
-                    curr = succ;
-                    succ = curr.next.get(marked);
-                }
-                
-                if (curr.value >= Integer.MAX_VALUE-1)
-                {
-                    break retry;
-                }
-
-                output += curr.value + " ";
-                pred = curr;
-                curr = succ;
-            }
-        }
-
-        System.out.println(output);
     }
 
     private class Node
