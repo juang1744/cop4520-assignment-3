@@ -1,6 +1,7 @@
 import java.util.Random;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.AtomicMarkableReference;
 
 public class Problem1
 {
@@ -8,7 +9,7 @@ public class Problem1
 
     public static void main(String[] args)
     {
-        CoarseList list = new CoarseList();
+        LockFreeList list = new LockFreeList();
         Thread[] threads = new Thread[NUM_THREADS];
 
         for (int i = 0; i < threads.length; i++)
@@ -39,31 +40,26 @@ public class Problem1
             {
                 thread.join();
             }
-            catch (InterruptedException exception)
-            {
-
-            }
+            catch (InterruptedException exception) {}
         }
     }
 }
 
-class CoarseList
+class LockFreeList
 {
     public Node head, tail;
-    private Lock lock = new ReentrantLock();
 
-    public CoarseList()
+    public LockFreeList()
     {
         head = new Node(Integer.MIN_VALUE);
         tail = new Node(Integer.MAX_VALUE);
-        head.next = tail;
+        head.next = new AtomicMarkableReference<Node>(tail, false);
+        tail.next = new AtomicMarkableReference<Node>(null, false);
     }
 
     public boolean add(int value)
     {
-        lock.lock();
-
-        try
+        while (true)
         {
             Window window = find(value);
             Node pred = window.pred;
@@ -76,105 +72,111 @@ class CoarseList
             else
             {
                 Node node = new Node(value);
-                node.next = curr;
-                pred.next = node;
-                return true;    
+                node.next = new AtomicMarkableReference<Node>(curr, false);
+                if (pred.next.compareAndSet(curr, node, false, false))
+                {
+                    return true;
+                }
             }
-        }
-        finally
-        {
-            lock.unlock();
         }
     }
 
     public boolean remove(int value)
     {
-        lock.lock();
+        boolean snip;
 
-        try
+        while (true)
         {
             Window window = find(value);
             Node pred = window.pred;
             Node curr = window.curr;
 
-            if (curr.value == value)
-            {
-                pred.next = curr.next;
-                return true;
-            }
-            else
+            if (curr.value != value)
             {
                 return false;
             }
-        }
-        finally
-        {
-            lock.unlock();
+            else
+            {
+                Node succ = curr.next.getReference();
+                snip = curr.next.compareAndSet(succ, succ, false, true);
+
+                if (!snip)
+                {
+                    continue;
+                }
+
+                pred.next.compareAndSet(curr, succ, false, false);
+                return true;
+            }
         }
     }
 
     public boolean removeFirst()
     {
-        return remove(head.next.value);
+        return remove(head.next.getReference().value);
     }
 
     public boolean contains(int value)
     {
-        lock.lock();
+        boolean[] marked = {false};
+        Node curr = head;
 
-        try
+        while (curr.value < value)
         {
-            Window window = find(value);
-            Node pred = window.pred;
-            Node curr = window.curr;
+            curr = curr.next.getReference();
+            Node succ = curr.next.get(marked);
+        }
 
-            if (curr.value == value)
-            {
-                return true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-        finally
-        {
-            lock.unlock();
-        }
+        return (curr.value == value && !marked[0]);
     }
 
     public void print()
     {
         String output = "";
-        Node pred, curr;
-        int value = Integer.MAX_VALUE-1;
+        Node pred = null, curr = null, succ = null;
+        boolean[] marked = {false};
+        boolean snip;
 
-        lock.lock();
-
-        try
+        retry: while (true)
         {
             pred = head;
-            curr = head.next;
+            curr = pred.next.getReference();
 
-            while (curr.value < value)
+            while (true)
             {
+                succ = curr.next.get(marked);
+                
+                while (marked[0])
+                {
+                    snip = pred.next.compareAndSet(curr, succ, false, false);
+
+                    if (!snip)
+                    {
+                        continue retry;
+                    }
+
+                    curr = succ;
+                    succ = curr.next.get(marked);
+                }
+                
+                if (curr.value >= Integer.MAX_VALUE-1)
+                {
+                    break retry;
+                }
+
                 output += curr.value + " ";
                 pred = curr;
-                curr = curr.next;
+                curr = succ;
             }
+        }
 
-            System.out.println(output);
-        }
-        finally
-        {
-            lock.unlock();
-        }
+        System.out.println(output);
     }
 
     private class Node
     {
         volatile int value;
-        volatile Node next;
+        AtomicMarkableReference<Node> next;
 
         Node(int value)
         {
@@ -191,19 +193,44 @@ class CoarseList
             this.pred = pred;
             this.curr = curr;
         }
-    }
+    }   
 
     private Window find(int value)
     {
-        Node pred = head;
-        Node curr = pred.next;
+        Node pred = null, curr = null, succ = null;
+        boolean[] marked = {false};
+        boolean snip;
 
-        while (curr.value < value)
+        retry: while (true)
         {
-            pred = curr;
-            curr = curr.next;
-        }
+            pred = head;
+            curr = pred.next.getReference();
 
-        return new Window(pred, curr);
+            while (true)
+            {
+                succ = curr.next.get(marked);
+                
+                while (marked[0])
+                {
+                    snip = pred.next.compareAndSet(curr, succ, false, false);
+
+                    if (!snip)
+                    {
+                        continue retry;
+                    }
+
+                    curr = succ;
+                    succ = curr.next.get(marked);
+                }
+                
+                if (curr.value >= value)
+                {
+                    return new Window(pred, curr);
+                }
+
+                pred = curr;
+                curr = succ;
+            }
+        }
     }
 }
